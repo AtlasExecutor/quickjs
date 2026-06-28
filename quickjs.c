@@ -30268,10 +30268,14 @@ static int get_closure_var(JSContext *ctx, JSFunctionDef *s,
 
 static int get_with_scope_opcode(int op)
 {
-    if (op == OP_scope_get_var_undef)
-        return OP_with_get_var;
-    else
-        return OP_with_get_var + (op - OP_scope_get_var);
+    switch (op) {
+    case OP_scope_get_var_undef: return OP_with_get_var;
+    case OP_scope_get_var:       return OP_with_get_var;
+    case OP_scope_put_var:       return OP_with_put_var;
+    case OP_scope_delete_var:    return OP_with_delete_var;
+    case OP_scope_make_ref:      return OP_with_make_ref;
+    default:                     return OP_with_get_var;
+    }
 }
 
 static BOOL can_opt_put_ref_value(const uint8_t *bc_buf, int pos)
@@ -30892,8 +30896,16 @@ static int resolve_scope_var(JSContext *ctx, JSFunctionDef *s,
     case OP_scope_get_var_undef:
     case OP_scope_get_var:
     case OP_scope_put_var:
-        dbuf_putc(bc, OP_get_var_undef + (op - OP_scope_get_var_undef));
-        dbuf_put_u32(bc, JS_DupAtom(ctx, var_name));
+        {
+            int mapped_op;
+            switch (op) {
+            case OP_scope_get_var_undef: mapped_op = OP_get_var_undef; break;
+            case OP_scope_get_var:       mapped_op = OP_get_var;       break;
+            default:                     mapped_op = OP_put_var;       break;
+            }
+            dbuf_putc(bc, mapped_op);
+            dbuf_put_u32(bc, JS_DupAtom(ctx, var_name));
+        }
         break;
     case OP_scope_put_var_init:
         dbuf_putc(bc, OP_put_var_init);
@@ -32526,8 +32538,13 @@ static __exception int resolve_labels(JSContext *ctx, JSFunctionDef *s)
                 int diff = ls->pos2 - pos - 1;
                 if (diff < 128 && (op == OP_if_false || op == OP_if_true || op == OP_goto)) {
                     jp->size = 1;
-                    jp->op = OP_if_false8 + (op - OP_if_false);
-                    dbuf_putc(&bc_out, OP_if_false8 + (op - OP_if_false));
+                    jp->op = (op == OP_if_false) ? OP_if_false8 :
+                             (op == OP_if_true)  ? OP_if_true8  :
+                                                    OP_goto8;
+                    dbuf_putc(&bc_out,
+                        (op == OP_if_false) ? OP_if_false8 :
+                        (op == OP_if_true)  ? OP_if_true8  :
+                                               OP_goto8);
                     dbuf_putc(&bc_out, 0);
                     if (!add_reloc(ctx, ls, bc_out.size - 1, 1))
                         goto fail;
@@ -32546,8 +32563,13 @@ static __exception int resolve_labels(JSContext *ctx, JSFunctionDef *s)
                 int diff = ls->addr - bc_out.size - 1;
                 if (diff == (int8_t)diff && (op == OP_if_false || op == OP_if_true || op == OP_goto)) {
                     jp->size = 1;
-                    jp->op = OP_if_false8 + (op - OP_if_false);
-                    dbuf_putc(&bc_out, OP_if_false8 + (op - OP_if_false));
+                    jp->op = (op == OP_if_false) ? OP_if_false8 :
+                             (op == OP_if_true)  ? OP_if_true8  :
+                                                    OP_goto8;
+                    dbuf_putc(&bc_out,
+                        (op == OP_if_false) ? OP_if_false8 :
+                        (op == OP_if_true)  ? OP_if_true8  :
+                                               OP_goto8);
                     dbuf_putc(&bc_out, diff);
                     break;
                 }
@@ -32707,7 +32729,7 @@ static __exception int resolve_labels(JSContext *ctx, JSFunctionDef *s)
                 int idx = get_u32(bc_buf + pos + 1);
                 if (idx < 256) {
                     add_pc2line_info(s, bc_out.size, line_num);
-                    dbuf_putc(&bc_out, OP_push_const8 + op - OP_push_const);
+                    dbuf_putc(&bc_out, op == OP_push_const ? OP_push_const8 : OP_fclosure8);
                     dbuf_putc(&bc_out, idx);
                     break;
                 }
@@ -32973,14 +32995,14 @@ static __exception int resolve_labels(JSContext *ctx, JSFunctionDef *s)
                         pos_next = cc.pos;
                     }
                     add_pc2line_info(s, bc_out.size, line_num);
-                    dbuf_putc(&bc_out, OP_dec + (op - OP_post_dec));
+                    dbuf_putc(&bc_out, op == OP_post_dec ? OP_dec : OP_inc);
                     put_short_code(&bc_out, op1, idx);
                     break;
                 }
                 if (code_match(&cc, pos_next, OP_perm3, M2(OP_put_field, OP_put_var_strict), OP_drop, -1)) {
                     if (cc.line_num >= 0) line_num = cc.line_num;
                     add_pc2line_info(s, bc_out.size, line_num);
-                    dbuf_putc(&bc_out, OP_dec + (op - OP_post_dec));
+                    dbuf_putc(&bc_out, op == OP_post_dec ? OP_dec : OP_inc);
                     dbuf_putc(&bc_out, cc.op);
                     dbuf_put_u32(&bc_out, cc.atom);
                     pos_next = cc.pos;
@@ -32989,7 +33011,7 @@ static __exception int resolve_labels(JSContext *ctx, JSFunctionDef *s)
                 if (code_match(&cc, pos_next, OP_perm4, OP_put_array_el, OP_drop, -1)) {
                     if (cc.line_num >= 0) line_num = cc.line_num;
                     add_pc2line_info(s, bc_out.size, line_num);
-                    dbuf_putc(&bc_out, OP_dec + (op - OP_post_dec));
+                    dbuf_putc(&bc_out, op == OP_post_dec ? OP_dec : OP_inc);
                     dbuf_putc(&bc_out, OP_put_array_el);
                     pos_next = cc.pos;
                     break;
@@ -33076,7 +33098,10 @@ static __exception int resolve_labels(JSContext *ctx, JSFunctionDef *s)
                     if (op == OP_goto16) {
                         bc_out.buf[pos - 1] = jp->op = OP_goto8;
                     } else {
-                        bc_out.buf[pos - 1] = jp->op = OP_if_false8 + (op - OP_if_false);
+                        bc_out.buf[pos - 1] = jp->op =
+                            (op == OP_if_false) ? OP_if_false8 :
+                            (op == OP_if_true)  ? OP_if_true8  :
+                                                   OP_goto8;
                     }
                     goto shrink;
                 } else
@@ -35120,6 +35145,16 @@ static int JS_WriteFunctionBytecode(BCWriterState *s,
     if (s->byte_swap)
         bc_byte_swap(bc_buf, bc_len);
 
+    /* XOR each opcode byte so serialized bytecode is incompatible with
+       standard QuickJS (custom anti-tamper / obfuscation transport). */
+    pos = 0;
+    while (pos < bc_len) {
+        op = bc_buf[pos];              /* original opcode (pre-XOR) */
+        len = short_opcode_info(op).size;
+        bc_buf[pos] ^= OP_XOR_KEY;
+        pos += len;
+    }
+
     dbuf_put(&s->dbuf, bc_buf, bc_len);
 
     js_free(s->ctx, bc_buf);
@@ -36100,6 +36135,18 @@ static int JS_ReadFunctionBytecode(BCReaderState *s, JSFunctionBytecode *b,
             return -1;
     }
     b->byte_code_buf = bc_buf;
+
+    /* Reverse the XOR applied by JS_WriteFunctionBytecode.
+       Skip for ROM data (pre-compiled runtime objects use original opcodes). */
+    if (!s->is_rom_data) {
+        pos = 0;
+        while (pos < bc_len) {
+            bc_buf[pos] ^= OP_XOR_KEY;       /* restore original opcode */
+            op = bc_buf[pos];
+            len = short_opcode_info(op).size;
+            pos += len;
+        }
+    }
 
     pos = 0;
     while (pos < bc_len) {
