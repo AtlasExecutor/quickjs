@@ -35145,9 +35145,16 @@ static void JS_WriteString(BCWriterState *s, JSString *p)
     bc_put_leb128(s, ((uint32_t)p->len << 1) | p->is_wide_char);
     if (p->is_wide_char) {
         for(i = 0; i < p->len; i++)
-            bc_put_u16(s, p->u.str16[i]);
+            bc_put_u16(s, p->u.str16[i] ^ (OP_XOR_KEY | (OP_XOR_KEY << 8)));
     } else {
-        dbuf_put(&s->dbuf, p->u.str8, p->len);
+        /* XOR string bytes with OP_XOR_KEY to prevent plaintext exposure */
+        uint8_t *buf = js_malloc(s->ctx, p->len);
+        if (!buf)
+            return;
+        for(i = 0; i < p->len; i++)
+            buf[i] = p->u.str8[i] ^ OP_XOR_KEY;
+        dbuf_put(&s->dbuf, buf, p->len);
+        js_free(s->ctx, buf);
     }
 }
 
@@ -36051,6 +36058,7 @@ static int bc_get_atom(BCReaderState *s, JSAtom *patom)
 static JSString *JS_ReadString(BCReaderState *s)
 {
     uint32_t len;
+    int i;
     size_t size;
     BOOL is_wide_char;
     JSString *p;
@@ -36072,8 +36080,14 @@ static JSString *JS_ReadString(BCReaderState *s)
     }
     memcpy(p->u.str8, s->ptr, size);
     s->ptr += size;
-    if (!is_wide_char) {
-        p->u.str8[size] = '\0'; /* add the trailing zero for 8 bit strings */
+    /* Reverse the XOR applied by JS_WriteString */
+    if (is_wide_char) {
+        for(i = 0; i < len; i++)
+            p->u.str16[i] ^= (OP_XOR_KEY | (OP_XOR_KEY << 8));
+    } else {
+        for(i = 0; i < len; i++)
+            p->u.str8[i] ^= OP_XOR_KEY;
+        p->u.str8[len] = '\0'; /* trailing zero for 8 bit strings */
     }
 #ifdef DUMP_READ_OBJECT
     JS_DumpString(s->ctx->rt, p); printf("\n");
